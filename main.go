@@ -180,6 +180,14 @@ func main() {
 	// cluster info retriever
 	clusterInfoRetriever := clusterinfo.New(logger, httpClient, esURL, *esClusterInfoInterval)
 
+	sC := collector.NewClusterSli(logger, httpClient, esURL)
+	prometheus.MustRegister(sC)
+
+	if registerErr := clusterInfoRetriever.RegisterConsumer(sC); registerErr != nil {
+		_ = level.Error(logger).Log("msg", "failed to register sli collector in cluster info")
+		os.Exit(1)
+	}
+
 	prometheus.MustRegister(collector.NewClusterHealth(logger, httpClient, esURL))
 	prometheus.MustRegister(collector.NewNodes(logger, httpClient, esURL, *esAllNodes, *esNode))
 
