@@ -164,6 +164,18 @@ func NewClusterSli(logger log.Logger, client *http.Client, url *url.URL) *Cluste
 			{
 				Type: prometheus.GaugeValue,
 				Desc: prometheus.NewDesc(
+					prometheus.BuildFQName(namespace, subsystem, "search_request_success_num"),
+					"The number of shards mget search success get to shards. If request status not 200 will be 0,means failed request",
+					defaultClusterSliLabels, nil,
+				),
+				Value: func(mgetResult MgetResult) float64 {
+					return float64(mgetResult.totalSuccess)
+				},
+				ClusterLabels: clusterLabels,
+			},
+			{
+				Type: prometheus.GaugeValue,
+				Desc: prometheus.NewDesc(
 					prometheus.BuildFQName(namespace, subsystem, "search_confirm_persist_last_insert"),
 					"Use last insert value to confirm durability",
 					defaultClusterSliLabels, nil,
@@ -308,7 +320,7 @@ func (c *ClusterSli) fetchAndCalculateSli() MgetResult {
 			"msg", "failed to connect http",
 			"err", err,
 		)
-		return MgetResult{1, 0, 30, elapsed}
+		return MgetResult{1, 0, 0, elapsed}
 	}
 
 	defer func() {
@@ -322,18 +334,18 @@ func (c *ClusterSli) fetchAndCalculateSli() MgetResult {
 	}()
 
 	if mgetRes.StatusCode != http.StatusOK {
-		return MgetResult{1, 0, 30, elapsed}
+		return MgetResult{1, 0, 0, elapsed}
 	}
 
 	bts, err := ioutil.ReadAll(mgetRes.Body)
 	if err != nil {
 		c.jsonParseFailures.Inc()
-		return MgetResult{1, 0, 30, elapsed}
+		return MgetResult{1, 0, 0, elapsed}
 	}
 
 	if err := json.Unmarshal(bts, &mr); err != nil {
 		c.jsonParseFailures.Inc()
-		return MgetResult{1, 0, 30, elapsed}
+		return MgetResult{1, 0, 0, elapsed}
 	}
 
 	totalShard := int64(0)
