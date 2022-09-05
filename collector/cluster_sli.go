@@ -34,6 +34,24 @@ type monitorIndex struct {
 	} `json:"mappings"`
 }
 
+type monitorIndexVersion6 struct {
+	Settings struct {
+		NumberOfShards                        int    `json:"number_of_shards"`
+		NumberOfReplicas                      int    `json:"number_of_replicas"`
+		IndexUnassignedNodeLeftDelayedTimeout string `json:"index.unassigned.node_left.delayed_timeout"`
+	} `json:"settings"`
+	Mappings struct {
+		Doc struct {
+			Dynamic    bool `json:"dynamic"`
+			Properties struct {
+				MonitorDurability struct {
+					Type string `json:"type"`
+				} `json:"monitor_durability"`
+			} `json:"properties"`
+		} `json:"_doc"`
+	} `json:"mappings"`
+}
+
 type bulkIndex struct {
 	Index struct {
 		Id      int `json:"_id"`
@@ -98,6 +116,7 @@ type ClusterSli struct {
 	clusterInfoCh   chan *clusterinfo.Response
 	lastClusterInfo *clusterinfo.Response
 	lastInsertValue int64
+	clusterVersion  string
 
 	up                prometheus.Gauge
 	totalScrapes      prometheus.Counter
@@ -369,7 +388,12 @@ func (c *ClusterSli) bulkAndCalculateSli() BulkResult {
 	var br bulkResponse
 	u := *c.url
 	u.RawQuery = "timeout=2s"
-	u.Path = path.Join("/.monitoring-sli/_bulk")
+
+	if c.clusterVersion >= "7.0" {
+		u.Path = path.Join("/.monitoring-sli/_bulk")
+	} else {
+		u.Path = path.Join("/.monitoring-sli/_doc/_bulk")
+	}
 
 	var ndJsonString string = ""
 	var timeBulkValue int64 = time.Now().UnixMilli()
@@ -451,6 +475,31 @@ func (c *ClusterSli) bulkAndCalculateSli() BulkResult {
 
 func (c *ClusterSli) createMonitorIndexIfNotExist() {
 	u := *c.url
+
+	resp, err := c.client.Get(u.String())
+	if err != nil {
+		_ = level.Warn(c.logger).Log(
+			"msg", "failed to get cluster info for sil ,http.Client not connect",
+			"err", err,
+		)
+	}
+	defer resp.Body.Close()
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		_ = level.Warn(c.logger).Log(
+			"msg", "failed cluster info version,default is version 7",
+			"err", err,
+		)
+	}
+	var info ClusterInfoResponse
+	err = json.Unmarshal(b, &info)
+	if err != nil {
+		_ = level.Warn(c.logger).Log(
+			"msg", "failed unmarshal cluster info ,default version is version 7",
+			"err", err,
+		)
+	}
+
 	u.Path = path.Join("/.monitoring-sli")
 	res, err := c.client.Get(u.String())
 	if err != nil {
@@ -470,7 +519,8 @@ func (c *ClusterSli) createMonitorIndexIfNotExist() {
 		}
 	}()
 
-	if res.StatusCode == http.StatusNotFound {
+	if res.StatusCode == http.StatusNotFound && info.Version.Number.String() >= "7.0" {
+		c.clusterVersion = info.Version.Number.String()
 		monitorIndexSettings := monitorIndex{}
 		monitorIndexSettings.Settings.NumberOfShards = 30
 		monitorIndexSettings.Settings.NumberOfReplicas = 1
@@ -485,6 +535,21 @@ func (c *ClusterSli) createMonitorIndexIfNotExist() {
 		req.Header.Set("Content-Type", "application/json")
 		c.client.Do(req)
 
+	} else {
+		c.clusterVersion = info.Version.Number.String()
+		monitorIndexSettings := monitorIndexVersion6{}
+		monitorIndexSettings.Settings.NumberOfShards = 30
+		monitorIndexSettings.Settings.NumberOfReplicas = 1
+		monitorIndexSettings.Settings.IndexUnassignedNodeLeftDelayedTimeout = "10m"
+		monitorIndexSettings.Mappings.Doc.Dynamic = false
+		monitorIndexSettings.Mappings.Doc.Properties.MonitorDurability.Type = "long"
+
+		bytesData, _ := json.Marshal(monitorIndexSettings)
+
+		reader := bytes.NewReader(bytesData)
+		req, _ := http.NewRequest("PUT", u.String(), reader)
+		req.Header.Set("Content-Type", "application/json")
+		c.client.Do(req)
 	}
 
 }
